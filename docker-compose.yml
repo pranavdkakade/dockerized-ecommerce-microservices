@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Database Service
+  db:
+    image: postgres:15-alpine
+    container_name: ecom_postgres_db
+    restart: always
+    environment:
+      POSTGRES_DB: ecomdb
+      POSTGRES_USER: devopsuser
+      POSTGRES_PASSWORD: devopspassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devopsuser -d ecomdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecom-network
+
+  # 2. Redis Caching Service
+  redis:
+    image: redis:7-alpine
+    container_name: ecom_redis_cache
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ecom-network
+
+  # 3. Node.js Backend REST API Microservice
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ecom_backend_api
+    restart: always
+    environment:
+      PORT: 5000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: devopsuser
+      DB_PASSWORD: devopspassword
+      DB_NAME: ecomdb
+      DATABASE_URL: postgresql://devopsuser:devopspassword@db:5432/ecomdb
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: devops-jwt-token-key-2026
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - ecom-network
+
+  # 4. React Single Page Frontend Web Client
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ecom_frontend_client
+    restart: always
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - ecom-network
+
+  # 5. Nginx Master Gatekeeper & Reverse Proxy
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: ecom_nginx_proxy
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - ecom-network
+
+  # 6. Prometheus Service Metrics Collector
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ecom_prometheus_monitor
+    restart: always
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+    networks:
+      - ecom-network
+
+  # 7. Grafana Data Visualization Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ecom_grafana_dashboard
+    restart: always
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    depends_on:
+      - prometheus
+    networks:
+      - ecom-network
+
+volumes:
+  db-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  ecom-network:
+    driver: bridge
